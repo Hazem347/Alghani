@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { Product, Category, PricingType, ProductVariant } from '@/lib/types';
 import { formatPKR, getProductFallbackImage } from '@/lib/utils';
+import { parseWeightLbs } from '@/lib/customizationDefaults';
 import AdminErrorBanner from '@/components/admin/AdminErrorBanner';
 import {
   Plus,
@@ -121,7 +122,6 @@ export default function AdminProductsPage() {
     const filtered = allCandidateImages.filter(
       (img) =>
         img === currentImg ||
-        uploadedImages.includes(img) ||
         categoryProductImages.includes(img) ||
         folders.some((f) => img.includes(`/${f}/`)) ||
         img.includes(`/products/${categoryId}/`) ||
@@ -245,6 +245,43 @@ export default function AdminProductsPage() {
       return;
     }
 
+    const isCustomizedCake = editingProduct.categoryId === 'customized-cakes' || !!editingProduct.isCustomizable;
+    const effectivePricingType: PricingType = isCustomizedCake ? 'VARIANT' : (editingProduct.pricingType as PricingType) || 'FIXED';
+
+    // Validate 3 LBS minimum requirement for customized cakes
+    if (isCustomizedCake && variantsList.length > 0) {
+      for (const v of variantsList) {
+        const lbs = parseWeightLbs(v.name);
+        if (lbs !== null && lbs < 3) {
+          alert(`Weight variant "${v.name}" violates the 3 LBS minimum order requirement for Customized Cakes. Please specify 3 LBS or higher.`);
+          return;
+        }
+      }
+    }
+
+    // Auto-sync basePrice to starting (lowest weight >= 3 LBS) variant price for Customized Cakes & Variant products
+    let syncedBasePrice = Number(editingProduct.basePrice) || 0;
+    if (variantsList.length > 0 && (effectivePricingType === 'VARIANT' || isCustomizedCake)) {
+      const validVariants = isCustomizedCake
+        ? variantsList.filter((v) => {
+            const lbs = parseWeightLbs(v.name);
+            return lbs === null || lbs >= 3;
+          })
+        : variantsList;
+
+      const sortedVariants = [...(validVariants.length > 0 ? validVariants : variantsList)].sort((a, b) => {
+        const wA = parseWeightLbs(a.name) ?? Infinity;
+        const wB = parseWeightLbs(b.name) ?? Infinity;
+        if (wA !== wB) return wA - wB;
+        return a.price - b.price;
+      });
+
+      const startingVariant = sortedVariants.find((v) => v.isDefault) || sortedVariants[0];
+      if (startingVariant && startingVariant.price > 0) {
+        syncedBasePrice = startingVariant.price;
+      }
+    }
+
     setIsSaving(true);
     setFeedbackError('');
     try {
@@ -254,8 +291,8 @@ export default function AdminProductsPage() {
         slug: editingProduct.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
         categoryId: editingProduct.categoryId,
         subcategoryId: editingProduct.subcategoryId,
-        pricingType: (editingProduct.pricingType as PricingType) || 'FIXED',
-        basePrice: Number(editingProduct.basePrice) || 0,
+        pricingType: effectivePricingType,
+        basePrice: syncedBasePrice,
         packInfo: editingProduct.packInfo || undefined,
         shortDescription: editingProduct.shortDescription || '',
         fullDescription: editingProduct.fullDescription || '',
@@ -263,13 +300,13 @@ export default function AdminProductsPage() {
           editingProduct.images && editingProduct.images.length > 0
             ? editingProduct.images
             : [getProductFallbackImage(editingProduct.categoryId, editingProduct.subcategoryId, categories)],
-          imageScale: Math.max(60, Math.min(140, Number(editingProduct.imageScale) || 100)),
-        isCustomizable: !!editingProduct.isCustomizable,
+        imageScale: Math.max(60, Math.min(140, Number(editingProduct.imageScale) || 100)),
+        isCustomizable: isCustomizedCake,
         isFeatured: !!editingProduct.isFeatured,
         isPopular: !!editingProduct.isPopular,
         isAvailable: editingProduct.isAvailable !== false,
         sortOrder: Number(editingProduct.sortOrder) || 1,
-        variants: editingProduct.pricingType === 'VARIANT' ? variantsList : undefined,
+        variants: effectivePricingType === 'VARIANT' ? variantsList : undefined,
       };
 
       const res = await fetch('/api/admin/products', {
@@ -817,11 +854,12 @@ export default function AdminProductsPage() {
                 <label className="flex items-center gap-2 text-xs font-bold text-gray-700 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={editingProduct.isCustomizable || false}
+                    checked={editingProduct.categoryId === 'customized-cakes' || editingProduct.isCustomizable || false}
+                    disabled={editingProduct.categoryId === 'customized-cakes'}
                     onChange={(e) => setEditingProduct({ ...editingProduct, isCustomizable: e.target.checked })}
-                    className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500"
+                    className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
-                  <span>Mark as Customizable Cake (Enables Section 7 Multi-Step Configurator & 30% Advance)</span>
+                  <span>Mark as Customizable Cake (Enables Section 7 Multi-Step Configurator & 30% Advance) {editingProduct.categoryId === 'customized-cakes' && <span className="text-purple-600 ml-1">(Required)</span>}</span>
                 </label>
 
                 <label className="flex items-center gap-2 text-xs font-bold text-gray-700 cursor-pointer">
